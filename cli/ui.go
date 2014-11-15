@@ -3,22 +3,32 @@ package cli
 import "fmt"
 import "os"
 
-import "github.com/mitchellh/cli"
+import "github.com/mgutz/ansi"
 
-var Ui = &cli.ColoredUi{
-	// FIXME: a nicer approach would not hurt
-	OutputColor: cli.UiColorNone,
-	InfoColor:   cli.UiColorYellow,
-	ErrorColor:  cli.UiColorRed,
-	Ui: &cli.BasicUi{
-		Reader:      os.Stdin,
-		Writer:      os.Stdout,
-		ErrorWriter: os.Stderr,
-	},
+var DEBUG = true
+
+var Colorize = struct {
+	AsDebug, AsInfo, AsError func(string) string
+}{
+	ansi.ColorFunc("blue+h"),
+	ansi.ColorFunc("yellow"),
+	ansi.ColorFunc("red+h"),
+}
+
+func Debug(s string) {
+	if DEBUG {
+		fmt.Fprintln(os.Stderr, Colorize.AsDebug("DEBUG: "+s))
+	}
+}
+
+func Debugf(format string, a ...interface{}) {
+	if DEBUG {
+		fmt.Fprintf(os.Stderr, Colorize.AsDebug("DEBUG: "+format)+"\n", a...)
+	}
 }
 
 func Output(s string) {
-	Ui.Output(s)
+	fmt.Println(s)
 }
 
 func Printf(format string, a ...interface{}) {
@@ -26,7 +36,7 @@ func Printf(format string, a ...interface{}) {
 }
 
 func Info(s string) {
-	Ui.Info(s)
+	fmt.Println(Colorize.AsInfo(s))
 }
 
 func Infof(format string, a ...interface{}) {
@@ -34,9 +44,9 @@ func Infof(format string, a ...interface{}) {
 }
 
 func Error(err error) {
-	Ui.Error(err.Error())
+	fmt.Fprintln(os.Stderr, Colorize.AsError("ERROR: "+err.Error()))
 }
 
 func Errorf(format string, a ...interface{}) {
-	Ui.Error(fmt.Sprintf(format, a...))
+	fmt.Fprintf(os.Stderr, Colorize.AsError("ERROR: "+format)+"\n", a...)
 }

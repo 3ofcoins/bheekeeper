@@ -1,5 +1,6 @@
 package vm
 
+import "errors"
 import "fmt"
 import "io"
 import "io/ioutil"
@@ -7,6 +8,8 @@ import "os"
 import "os/exec"
 import "path/filepath"
 import "strings"
+
+var ErrVMNotFound = errors.New("VM not found")
 
 type VM struct {
 	Name, Volume string
@@ -39,11 +42,7 @@ func FindVM(name string) (*VM, error) {
 			}
 		}
 	}
-	return nil, nil
-}
-
-func (vm *VM) String() string {
-	return fmt.Sprintf("%s (%s)", vm.Name, vm.Volume)
+	return nil, ErrVMNotFound
 }
 
 func (vm *VM) Properties() map[string]string {

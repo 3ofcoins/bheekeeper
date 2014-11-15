@@ -1,14 +1,17 @@
 package main
 
+import "fmt"
 import "os"
 
 import "github.com/3ofcoins/bheekeeper/cli"
 import "github.com/3ofcoins/bheekeeper/vm"
 
-func cmdList(args []string) int {
+var cmdList = cli.NewCommand("list", "List known VMs", func(args []string) error {
+	if len(args) > 0 {
+		return cli.ErrUsage
+	}
 	if vms, err := vm.AllVMs(); err != nil {
-		cli.Error(err)
-		return 1
+		return err
 	} else {
 		if len(vms) == 0 {
 			cli.Info("No VMs configured")
@@ -16,94 +19,62 @@ func cmdList(args []string) int {
 			cli.Info("Configured VMs:")
 			for _, vm := range vms {
 				if vm.Exists() {
-					cli.Printf(" - %v (exists)", vm)
+					cli.Printf(" *%v", vm.Name)
 				} else {
-					cli.Printf(" - %v", vm)
+					cli.Printf("  %v", vm.Name)
 				}
 			}
 		}
-		return 0
 	}
-}
+	return nil
+})
 
-func cmdStatus(args []string) int {
-	vm, err := vm.FindVM(args[0])
-	if err != nil {
-		cli.Error(err)
-		return 1
-	}
-	if vm == nil {
-		cli.Errorf("VM not found: %v", args[0])
-		return 1
-	}
-	header := vm.String()
-	if vm.Exists() {
-		header += " (exists)"
-	}
-	cli.Info(header)
-	for prop, val := range vm.Properties() {
-		cli.Printf("%v: %v", prop, val)
-	}
-	return 0
-}
-
-func cmdDestroy(args []string) int {
-	vm, err := vm.FindVM(args[0])
-	if err != nil {
-		cli.Error(err)
-		return 1
-	}
-	if vm == nil {
-		cli.Errorf("VM not found: %v", args[0])
-		return 1
-	}
-	if vm.Exists() {
-		cli.Info("Destroying: " + vm.String())
-		if err := vm.RunBhyvectl("--destroy"); err != nil {
-			cli.Error(err)
-			return 1
-		} else {
-			return 0
+func newVMCommand(name, synopsis string, runner func(*vm.VM) error) *cli.Command {
+	return cli.NewCommand(name+" VM", synopsis, func(args []string) error {
+		if len(args) != 1 {
+			return cli.ErrUsage
 		}
-	} else {
-		cli.Errorf("VM does not exist: %s", vm.String())
-		return 1
-	}
+		if vm, err := vm.FindVM(args[0]); err != nil {
+			return err
+		} else {
+			return runner(vm)
+		}
+	})
 }
 
-func cmdRun(args []string) int {
-	vm, err := vm.FindVM(args[0])
-	if err != nil {
-		cli.Error(err)
-		return 1
+var cmdStatus = newVMCommand("status", "Show detailed status of a VM", func(vm *vm.VM) error {
+	cli.Printf("Name: %v\nExists: %v\nZFS Volume: %v\nProperties:",
+		vm.Name, vm.Exists(), vm.Volume)
+	for prop, val := range vm.Properties() {
+		cli.Printf("  %v: %v", prop, val)
 	}
-	if vm == nil {
-		cli.Errorf("VM not found: %v", args[0])
-		return 1
-	}
+	return nil
+})
 
+var cmdRun = newVMCommand("run", "Run VM", func(vm *vm.VM) error {
 	if err := vm.RunGrub(); err != nil {
-		cli.Error(err)
-		return 1
+		return err
 	}
-
 	defer vm.RunBhyvectl("--destroy")
+	return vm.RunBhyve()
+})
 
-	if err := vm.RunBhyve(); err != nil {
-		cli.Error(err)
-		return 1
+var cmdDestroy = newVMCommand("destroy", "Destroy VM", func(vm *vm.VM) error {
+	if vm.Exists() {
+		cli.Info("Destroying: " + vm.Name)
+		return vm.RunBhyvectl("--destroy")
+	} else {
+		return fmt.Errorf("VM does not exist: %s", vm.Name)
 	}
-
-	return 0
-}
+})
 
 func main() {
 	c := cli.NewCLI("bheekeeper", "0.0.1")
 	c.Args = os.Args[1:]
-	c.Cmd("list", "List VMs", "List VMs", cmdList)
-	c.Cmd("status", "Show detailed status of VM", "Show VM status", cmdStatus)
-	c.Cmd("run", "Run VM", "Run VM", cmdRun)
-	c.Cmd("destroy", "Destroy VM", "Destroy VM", cmdDestroy)
+	c.Register(cmdList)
+	c.Register(cmdStatus)
+	c.Register(cmdRun)
+	c.Register(cmdDestroy)
 
 	exitStatus, err := c.Run()
 	if err != nil {

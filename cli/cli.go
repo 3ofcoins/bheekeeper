@@ -36,6 +36,6 @@ func NewCLI(name, version string) *CLI {
 	return c
 }
 
-func (c *CLI) Cmd(name, help, synopsis string, run Runner) {
-	c.Commands[name] = c.cmdFactory(help, synopsis, run)
+func (c *CLI) Register(cmd *Command) {
+	cmd.RegisterInto(c.CLI)
 }
