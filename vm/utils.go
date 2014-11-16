@@ -9,12 +9,21 @@ import "syscall"
 
 import "github.com/3ofcoins/bheekeeper/cli"
 
+var stderr = io.Writer(os.Stderr)
+
+func withStderr(newStderr io.Writer, fn func()) {
+	origStderr := stderr
+	defer func() { stderr = origStderr }()
+	stderr = newStderr
+	fn()
+}
+
 func run(stdin io.Reader, stdout io.Writer, command string, args ...string) error {
 	cli.Debugf("+ %s %v", command, args)
 	cmd := exec.Command(command, args...)
 	cmd.Stdin = stdin
 	cmd.Stdout = stdout
-	cmd.Stderr = os.Stderr
+	cmd.Stderr = stderr
 	return cmd.Run()
 }
 

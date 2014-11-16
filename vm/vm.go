@@ -1,5 +1,6 @@
 package vm
 
+import "crypto/md5"
 import "errors"
 import "fmt"
 import "io"
@@ -7,7 +8,11 @@ import "io/ioutil"
 import "net"
 import "os"
 import "path/filepath"
+import "regexp"
+import "strconv"
 import "strings"
+
+import "github.com/3ofcoins/bheekeeper/cli" // FIXME? UI part seems awfully clunky
 
 var ErrVMNotFound = errors.New("VM not found")
 
@@ -46,6 +51,18 @@ func FindVM(name string) (*VM, error) {
 	return nil, ErrVMNotFound
 }
 
+func (vm *VM) MAC() string {
+	hsh := md5.Sum([]byte(vm.Name))
+	hw := make(net.HardwareAddr, 6)
+	hw[0] = 0x02
+	hw[1] = 0xAB
+	hw[2] = 0xEE
+	hw[3] = hsh[0]
+	hw[4] = hsh[1]
+	hw[5] = hsh[2]
+	return hw.String()
+}
+
 func (vm *VM) Properties() map[string]string {
 	if vm.properties == nil {
 		if props, err := zfs_peek("get", "-o", "property,value", "all", vm.Volume); err != nil {
@@ -64,9 +81,10 @@ func (vm *VM) Properties() map[string]string {
 }
 
 var PropertyDefaults = map[string]string{
-	"memory":    "1024",
+	"bridge":    "bridge0",
 	"cpus":      "1",
 	"grub:root": "hd0,msdos1",
+	"memory":    "1024",
 }
 
 func (vm *VM) Property(name string) string {
@@ -87,8 +105,25 @@ func (vm *VM) Bridge() string {
 	return bridge
 }
 
-func (vm *VM) Tap() string {
-	if vm.tap == "" {
+var rxSpace = regexp.MustCompile(`\s+`)
+
+func (vm *VM) Tap(create bool) string {
+	if pid := vm.BhyvePid(); vm.tap == "" && pid != 0 {
+		if out, err := runStdout(nil, "fstat", "-p", strconv.Itoa(pid), "-f", "/dev"); err != nil {
+			cli.Error(err)
+		} else {
+			for _, ln := range strings.Split(out, "\n") {
+				if ln == "" {
+					continue
+				}
+				lnw := rxSpace.Split(ln, -1)
+				if dev := lnw[len(lnw)-2]; strings.HasPrefix(dev, "tap") {
+					vm.tap = dev
+				}
+			}
+		}
+	}
+	if vm.tap == "" && create {
 		if tap, err := runStdout(nil, "ifconfig", "tap", "create"); err != nil {
 			panic(err)
 		} else {
@@ -101,8 +136,35 @@ func (vm *VM) Tap() string {
 	return vm.tap
 }
 
+func (vm *VM) vmmPath() string {
+	return filepath.Join("/dev/vmm", vm.Name)
+}
+
+func (vm *VM) BhyvePid() int {
+	var out string
+	var err error
+
+	if !vm.Exists() {
+		return 0
+	}
+
+	withStderr(nil, func() {
+		out, err = runStdout(nil, "fuser", vm.vmmPath())
+	})
+
+	if err != nil {
+		cli.Error(err)
+		return 0
+	}
+
+	// Get just the first PID
+	out = strings.Split(strings.TrimSpace(out), " ")[0]
+	pid, _ := strconv.Atoi(out)
+	return pid
+}
+
 func (vm *VM) Exists() bool {
-	if _, err := os.Stat(filepath.Join("/dev/vmm", vm.Name)); err != nil {
+	if _, err := os.Stat(vm.vmmPath()); err != nil {
 		return !os.IsNotExist(err)
 	} else {
 		return true
@@ -161,7 +223,7 @@ func (vm *VM) RunBhyve() error {
 		"-s", "0,hostbridge",
 		"-s", "1,lpc",
 		"-s", "2,virtio-blk,"+vm.volumePath(),
-		"-s", "3,virtio-net,"+vm.Tap(),
+		"-s", "3,virtio-net,"+vm.Tap(true)+",mac="+vm.MAC(),
 		"-l", "com1,stdio",
 		vm.Name)
 }
