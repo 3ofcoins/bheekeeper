@@ -52,10 +52,9 @@ var cmdStatus = newVMCommand("status", "Show detailed status of a VM", func(vm *
 })
 
 var cmdRun = newVMCommand("run", "Run VM", func(vm *vm.VM) error {
-	if err := vm.RunGrub(); err != nil {
-		return err
-	}
-	defer vm.RunBhyvectl("--destroy")
+	//if err := vm.RunGrub(); err != nil {
+	//	return err
+	//}
 	return vm.RunBhyve()
 })
 

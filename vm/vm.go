@@ -4,8 +4,8 @@ import "errors"
 import "fmt"
 import "io"
 import "io/ioutil"
+import "net"
 import "os"
-import "os/exec"
 import "path/filepath"
 import "strings"
 
@@ -14,10 +14,11 @@ var ErrVMNotFound = errors.New("VM not found")
 type VM struct {
 	Name, Volume string
 	properties   map[string]string
+	tap          string
 }
 
 func NewVM(name, volume string) *VM {
-	return &VM{name, volume, nil}
+	return &VM{Name: name, Volume: volume}
 }
 
 func AllVMs() ([]*VM, error) {
@@ -62,12 +63,42 @@ func (vm *VM) Properties() map[string]string {
 	return vm.properties
 }
 
-func (vm *VM) Property(name, defval string) string {
+var PropertyDefaults = map[string]string{
+	"memory":    "1024",
+	"cpus":      "1",
+	"grub:root": "hd0,msdos1",
+}
+
+func (vm *VM) Property(name string) string {
 	if val, exists := vm.Properties()[name]; exists {
 		return val
 	} else {
-		return defval
+		return PropertyDefaults[name]
 	}
+}
+
+func (vm *VM) Bridge() string {
+	bridge := vm.Property("bridge")
+	if _, err := net.InterfaceByName(bridge); err != nil {
+		if err := run(nil, os.Stdout, "ifconfig", bridge, "create"); err != nil {
+			panic(err)
+		}
+	}
+	return bridge
+}
+
+func (vm *VM) Tap() string {
+	if vm.tap == "" {
+		if tap, err := runStdout(nil, "ifconfig", "tap", "create"); err != nil {
+			panic(err)
+		} else {
+			vm.tap = strings.TrimSpace(tap)
+			if err := run(nil, os.Stdout, "ifconfig", vm.Bridge(), "addm", vm.tap); err != nil {
+				panic(err)
+			}
+		}
+	}
+	return vm.tap
 }
 
 func (vm *VM) Exists() bool {
@@ -80,15 +111,19 @@ func (vm *VM) Exists() bool {
 
 func (vm *VM) RunBhyvectl(args ...string) error {
 	args = append([]string{"--vm=" + vm.Name}, args...)
-	cmd := exec.Command("bhyvectl", args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	return run(nil, os.Stdout, "bhyvectl", args...)
 }
 
-var VMDefaultMemory = "1024"
-var VMDefaultCpus = "1"
-var VMDefaultGrubRoot = "hd0,msdos1"
+func (vm *VM) Destroy() {
+	if vm.Exists() {
+		vm.RunBhyvectl("--destroy")
+	}
+	if vm.tap != "" {
+		run(nil, os.Stdout, "ifconfig", vm.Bridge(), "deletem", vm.tap)
+		run(nil, os.Stdout, "ifconfig", vm.tap, "destroy")
+		vm.tap = ""
+	}
+}
 
 func (vm *VM) volumePath() string {
 	return filepath.Join("/dev/zvol", vm.Volume)
@@ -110,36 +145,23 @@ func (vm *VM) RunGrub() error {
 		return err
 	}
 
-	cmd := exec.Command("grub-bhyve",
-		"-r", vm.Property("grub:root", VMDefaultGrubRoot),
+	return run(os.Stdin, os.Stdout, "grub-bhyve",
+		"-r", vm.Property("grub:root"),
 		"-m", deviceMap.Name(),
-		"-M", vm.Property("mem", VMDefaultMemory),
+		"-M", vm.Property("mem"),
 		vm.Name)
-
-	// TODO: attach stdin only on demand
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	return cmd.Run()
 }
 
 func (vm *VM) RunBhyve() error {
-	cmd := exec.Command("bhyve",
-		"-c", vm.Property("cpus", VMDefaultCpus),
-		"-m", vm.Property("mem", VMDefaultMemory),
+	defer vm.Destroy()
+	return run(os.Stdin, os.Stdout, "bhyve",
+		"-c", vm.Property("cpus"),
+		"-m", vm.Property("mem"),
 		"-A", "-P", "-H",
 		"-s", "0,hostbridge",
 		"-s", "1,lpc",
 		"-s", "2,virtio-blk,"+vm.volumePath(),
-		"-s", "3,virtio-net,tap0", // FIXME: create & destroy tap
+		"-s", "3,virtio-net,"+vm.Tap(),
 		"-l", "com1,stdio",
 		vm.Name)
-
-	// TODO: attach stdin only on demand
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	return cmd.Run()
 }
