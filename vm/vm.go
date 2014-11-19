@@ -13,6 +13,7 @@ import "path/filepath"
 import "regexp"
 import "strconv"
 import "strings"
+import "syscall"
 
 import "github.com/3ofcoins/bheekeeper/cli" // FIXME? UI part seems awfully clunky
 
@@ -188,6 +189,7 @@ func (vm *VM) Destroy() {
 		vm.tap = ""
 	}
 	vm.loaded = false
+	vm.Cmd = nil
 }
 
 func (vm *VM) volumePath() string {
@@ -224,6 +226,29 @@ func (vm *VM) RunGrub(in io.Reader) error {
 
 var ErrLoaded = errors.New("Already loaded")
 
+func (vm *VM) setCmd() {
+	args := []string{
+		"-c", vm.Property("cpus"),
+		"-m", vm.Property("mem"),
+		"-A", "-P", "-H",
+		"-s", "0,hostbridge",
+		"-s", "1,lpc",
+		"-s", "2:0,virtio-blk," + vm.volumePath(),
+		"-s", "3,virtio-net," + vm.Tap(true) + ",mac=" + vm.MAC(),
+		"-l", "com1,stdio"}
+
+	if iso := vm.Property("cdrom_iso"); iso != "" {
+		args = append(args, "-s", "2:1,ahci-cd,"+iso)
+	}
+
+	args = append(args, vm.Name)
+
+	vm.Cmd = exec.Command("bhyve", args...)
+	vm.Stdin = os.Stdin
+	vm.Stdout = os.Stdout
+	vm.Stderr = os.Stderr
+}
+
 func (vm *VM) Load() error {
 	if vm.loaded {
 		return ErrLoaded
@@ -245,27 +270,7 @@ func (vm *VM) Load() error {
 		return err
 	}
 
-	args := []string{
-		"-c", vm.Property("cpus"),
-		"-m", vm.Property("mem"),
-		"-A", "-P", "-H",
-		"-s", "0,hostbridge",
-		"-s", "1,lpc",
-		"-s", "2:0,virtio-blk," + vm.volumePath(),
-		"-s", "3,virtio-net," + vm.Tap(true) + ",mac=" + vm.MAC(),
-		"-l", "com1,stdio"}
-
-	if iso := vm.Property("cdrom_iso"); iso != "" {
-		args = append(args, "-s", "2:1,ahci-cd,"+iso)
-	}
-
-	args = append(args, vm.Name)
-
-	vm.Cmd = exec.Command("bhyve", args...)
-	vm.Stdin = os.Stdin
-	vm.Stdout = os.Stdout
-	vm.Stderr = os.Stderr
-
+	vm.setCmd()
 	vm.loaded = true
 	return nil
 }
@@ -277,10 +282,60 @@ func (vm *VM) EnsureLoaded() error {
 	return nil
 }
 
-func (vm *VM) Run() error {
+type VMStatus int
+
+const (
+	VMError    = VMStatus(-1)
+	VMRebooted = VMStatus(0)
+	VMPoweroff = VMStatus(1)
+	VMHalted   = VMStatus(2)
+)
+
+func (s VMStatus) String() string {
+	switch s {
+	case VMError:
+		return "Error"
+	case VMRebooted:
+		return "Rebooted"
+	case VMPoweroff:
+		return "Poweroff"
+	case VMHalted:
+		return "Halted"
+	default:
+		return fmt.Sprintf("WTF%d", s)
+	}
+}
+
+func (vm *VM) Run1() (VMStatus, error) {
 	if err := vm.EnsureLoaded(); err != nil {
-		return err
+		return VMError, err
 	}
 	defer vm.Destroy()
-	return vm.Run()
+
+	switch err := vm.Cmd.Run(); err.(type) {
+	case nil:
+		return VMRebooted, nil
+	case *exec.ExitError:
+		ws := err.(*exec.ExitError).Sys().(syscall.WaitStatus)
+		if ws.Exited() && ws.ExitStatus() < 3 {
+			return VMStatus(ws.ExitStatus()), nil
+		} else {
+			return VMError, err
+		}
+	default:
+		return VMError, err
+	}
+}
+
+func (vm *VM) Run() error {
+	for {
+		if status, err := vm.Run1(); err != nil {
+			return err
+		} else {
+			cli.Info(status.String())
+			if status != VMRebooted {
+				return nil
+			}
+		}
+	}
 }
