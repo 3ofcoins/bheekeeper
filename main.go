@@ -41,7 +41,7 @@ var cmdStatus = cli.NewCommand("status [VM]", "List VMs or show detailed info ab
 					}
 				}
 				cli.Output("Properties:")
-				for prop, val := range vm.Properties() {
+				for prop, val := range vm.Properties {
 					cli.Printf("  %v: %v", prop, val)
 				}
 			}
@@ -65,10 +65,7 @@ func newVMCommand(name, synopsis string, runner func(*vm.VM) error) *cli.Command
 }
 
 var cmdRun = newVMCommand("run", "Run VM", func(vm *vm.VM) error {
-	if err := vm.RunGrub(); err != nil {
-		return err
-	}
-	return vm.RunBhyve()
+	return vm.Run()
 })
 
 var cmdDestroy = newVMCommand("destroy", "Destroy VM", func(vm *vm.VM) error {

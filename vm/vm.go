@@ -1,5 +1,6 @@
 package vm
 
+import "bytes"
 import "crypto/md5"
 import "errors"
 import "fmt"
@@ -7,6 +8,7 @@ import "io"
 import "io/ioutil"
 import "net"
 import "os"
+import "os/exec"
 import "path/filepath"
 import "regexp"
 import "strconv"
@@ -18,12 +20,14 @@ var ErrVMNotFound = errors.New("VM not found")
 
 type VM struct {
 	Name, Volume string
-	properties   map[string]string
+	Properties   map[string]string
 	tap          string
+	loaded       bool
+	*exec.Cmd
 }
 
 func NewVM(name, volume string) *VM {
-	return &VM{Name: name, Volume: volume}
+	return &VM{Name: name, Volume: volume, Properties: make(map[string]string)}
 }
 
 func AllVMs() ([]*VM, error) {
@@ -44,11 +48,26 @@ func FindVM(name string) (*VM, error) {
 	} else {
 		for _, vm := range vms {
 			if vm.Name == name {
-				return vm, nil
+				err := vm.LoadProperties()
+				return vm, err
 			}
 		}
 	}
 	return nil, ErrVMNotFound
+}
+
+func (vm *VM) LoadProperties() error {
+	props, err := zfs_peek("get", "-o", "property,value", "all", vm.Volume)
+	if err != nil {
+		return err
+	}
+	for _, prop := range props {
+		if !strings.HasPrefix(prop[0], "bhyve:") {
+			continue
+		}
+		vm.Properties[prop[0][6:]] = prop[1]
+	}
+	return nil
 }
 
 func (vm *VM) MAC() string {
@@ -63,32 +82,15 @@ func (vm *VM) MAC() string {
 	return hw.String()
 }
 
-func (vm *VM) Properties() map[string]string {
-	if vm.properties == nil {
-		if props, err := zfs_peek("get", "-o", "property,value", "all", vm.Volume); err != nil {
-			panic(err) // no better idea here
-		} else {
-			vm.properties = make(map[string]string)
-			for _, prop := range props {
-				if !strings.HasPrefix(prop[0], "bhyve") {
-					continue
-				}
-				vm.properties[prop[0][6:]] = prop[1]
-			}
-		}
-	}
-	return vm.properties
-}
-
 var PropertyDefaults = map[string]string{
 	"bridge":    "bridge0",
 	"cpus":      "1",
 	"grub:root": "hd0,msdos1",
-	"memory":    "1024",
+	"mem":       "1024",
 }
 
 func (vm *VM) Property(name string) string {
-	if val, exists := vm.Properties()[name]; exists {
+	if val, exists := vm.Properties[name]; exists {
 		return val
 	} else {
 		return PropertyDefaults[name]
@@ -185,13 +187,14 @@ func (vm *VM) Destroy() {
 		run(nil, os.Stdout, "ifconfig", vm.tap, "destroy")
 		vm.tap = ""
 	}
+	vm.loaded = false
 }
 
 func (vm *VM) volumePath() string {
 	return filepath.Join("/dev/zvol", vm.Volume)
 }
 
-func (vm *VM) RunGrub() error {
+func (vm *VM) RunGrub(in io.Reader) error {
 	deviceMap, err := ioutil.TempFile("", "bheekeper_device.map_")
 	if err != nil {
 		return err
@@ -199,7 +202,12 @@ func (vm *VM) RunGrub() error {
 
 	defer os.Remove(deviceMap.Name())
 
-	if _, err := io.WriteString(deviceMap, fmt.Sprintf("(hd0) %s\n", vm.volumePath())); err != nil {
+	deviceMapLines := []string{fmt.Sprintf("(hd0) %s\n", vm.volumePath())}
+	if iso := vm.Property("cdrom_iso"); iso != "" {
+		deviceMapLines = append(deviceMapLines, fmt.Sprintf("(cd0) %s\n", iso))
+	}
+
+	if _, err := io.WriteString(deviceMap, strings.Join(deviceMapLines, "")); err != nil {
 		return err
 	}
 
@@ -207,23 +215,72 @@ func (vm *VM) RunGrub() error {
 		return err
 	}
 
-	return run(os.Stdin, os.Stdout, "grub-bhyve",
+	return run(in, os.Stdout, "grub-bhyve",
 		"-r", vm.Property("grub:root"),
 		"-m", deviceMap.Name(),
 		"-M", vm.Property("mem"),
 		vm.Name)
 }
 
-func (vm *VM) RunBhyve() error {
-	defer vm.Destroy()
-	return run(os.Stdin, os.Stdout, "bhyve",
+var ErrLoaded = errors.New("Already loaded")
+
+func (vm *VM) Load() error {
+	if vm.loaded {
+		return ErrLoaded
+	}
+
+	var grubInRd io.Reader
+	if grubInStr, exists := vm.Properties["grub:in"]; exists {
+		if grubInStr == "-" {
+			grubInRd = os.Stdin
+		} else if strings.HasPrefix(grubInStr, "\"") {
+			grubInStr, err := strconv.Unquote(grubInStr)
+			if err != nil {
+				return err
+			}
+			grubInRd = bytes.NewBufferString(grubInStr)
+		}
+	}
+	if err := vm.RunGrub(grubInRd); err != nil {
+		return err
+	}
+
+	args := []string{
 		"-c", vm.Property("cpus"),
 		"-m", vm.Property("mem"),
 		"-A", "-P", "-H",
 		"-s", "0,hostbridge",
 		"-s", "1,lpc",
-		"-s", "2,virtio-blk,"+vm.volumePath(),
-		"-s", "3,virtio-net,"+vm.Tap(true)+",mac="+vm.MAC(),
-		"-l", "com1,stdio",
-		vm.Name)
+		"-s", "2:0,virtio-blk," + vm.volumePath(),
+		"-s", "3,virtio-net," + vm.Tap(true) + ",mac=" + vm.MAC(),
+		"-l", "com1,stdio"}
+
+	if iso := vm.Property("cdrom_iso"); iso != "" {
+		args = append(args, "-s", "2:1,ahci-cd,"+iso)
+	}
+
+	args = append(args, vm.Name)
+
+	vm.Cmd = exec.Command("bhyve", args...)
+	vm.Stdin = os.Stdin
+	vm.Stdout = os.Stdout
+	vm.Stderr = os.Stderr
+
+	vm.loaded = true
+	return nil
+}
+
+func (vm *VM) EnsureLoaded() error {
+	if !vm.loaded {
+		return vm.Load()
+	}
+	return nil
+}
+
+func (vm *VM) Run() error {
+	if err := vm.EnsureLoaded(); err != nil {
+		return err
+	}
+	defer vm.Destroy()
+	return vm.Run()
 }

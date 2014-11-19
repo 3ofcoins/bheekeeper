@@ -18,13 +18,17 @@ func withStderr(newStderr io.Writer, fn func()) {
 	fn()
 }
 
-func run(stdin io.Reader, stdout io.Writer, command string, args ...string) error {
-	cli.Debugf("+ %s %v", command, args)
+func cmd(stdin io.Reader, stdout io.Writer, command string, args ...string) *exec.Cmd {
 	cmd := exec.Command(command, args...)
 	cmd.Stdin = stdin
 	cmd.Stdout = stdout
-	cmd.Stderr = stderr
-	return cmd.Run()
+	cmd.Stderr = os.Stderr
+	return cmd
+}
+
+func run(stdin io.Reader, stdout io.Writer, command string, args ...string) error {
+	cli.Debugf("+ %s %v", command, args)
+	return cmd(stdin, stdout, command, args...).Run()
 }
 
 func runStatus(stdin io.Reader, stdout io.Writer, command string, args ...string) (int, error) {
