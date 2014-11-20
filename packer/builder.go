@@ -2,7 +2,6 @@ package packer
 
 import "fmt"
 import "os"
-import "path/filepath"
 
 // import "time"
 
@@ -62,7 +61,7 @@ func (b *Builder) Run(ui packer.Ui, hook packer.Hook, cache packer.Cache) (packe
 			HTTPPortMin: b.config.HTTPPortMin,
 			HTTPPortMax: b.config.HTTPPortMax,
 		},
-		&stepGrub{
+		&stepBoot{
 			Tpl: b.config.tpl,
 		},
 		// &common.StepConnectSSH{

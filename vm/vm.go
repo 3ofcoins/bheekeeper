@@ -226,29 +226,6 @@ func (vm *VM) RunGrub(in io.Reader) error {
 
 var ErrLoaded = errors.New("Already loaded")
 
-func (vm *VM) setCmd() {
-	args := []string{
-		"-c", vm.Property("cpus"),
-		"-m", vm.Property("mem"),
-		"-A", "-P", "-H",
-		"-s", "0,hostbridge",
-		"-s", "1,lpc",
-		"-s", "2:0,virtio-blk," + vm.volumePath(),
-		"-s", "3,virtio-net," + vm.Tap(true) + ",mac=" + vm.MAC(),
-		"-l", "com1,stdio"}
-
-	if iso := vm.Property("cdrom_iso"); iso != "" {
-		args = append(args, "-s", "2:1,ahci-cd,"+iso)
-	}
-
-	args = append(args, vm.Name)
-
-	vm.Cmd = exec.Command("bhyve", args...)
-	vm.Stdin = os.Stdin
-	vm.Stdout = os.Stdout
-	vm.Stderr = os.Stderr
-}
-
 func (vm *VM) Load() error {
 	if vm.loaded {
 		return ErrLoaded
@@ -270,7 +247,27 @@ func (vm *VM) Load() error {
 		return err
 	}
 
-	vm.setCmd()
+	args := []string{
+		"-c", vm.Property("cpus"),
+		"-m", vm.Property("mem"),
+		"-A", "-P", "-H",
+		"-s", "0,hostbridge",
+		"-s", "1,lpc",
+		"-s", "2:0,virtio-blk," + vm.volumePath(),
+		"-s", "3,virtio-net," + vm.Tap(true) + ",mac=" + vm.MAC(),
+		"-l", "com1,stdio"}
+
+	if iso := vm.Property("cdrom_iso"); iso != "" {
+		args = append(args, "-s", "2:1,ahci-cd,"+iso)
+	}
+
+	args = append(args, vm.Name)
+
+	vm.Cmd = exec.Command("bhyve", args...)
+	vm.Stdin = os.Stdin
+	vm.Stdout = os.Stdout
+	vm.Stderr = os.Stderr
+
 	vm.loaded = true
 	return nil
 }

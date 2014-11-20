@@ -1,8 +1,7 @@
 package packer
 
 import "fmt"
-import "io"
-import "time"
+import "strings"
 
 import "github.com/mitchellh/multistep"
 import "github.com/mitchellh/packer/packer"
@@ -14,19 +13,18 @@ type bootCommandTemplateData struct {
 	Name     string
 }
 
-type stepGrub struct {
+type stepBoot struct {
 	Tpl *packer.ConfigTemplate
+	ch  chan error
 }
 
-func (s *stepGrub) Run(state multistep.StateBag) multistep.StepAction {
+func (s *stepBoot) Run(state multistep.StateBag) multistep.StepAction {
+	s.ch = make(chan error, 1)
 	config := state.Get("config").(*Config)
 	ui := state.Get("ui").(packer.Ui)
 	isoPath := state.Get("iso_path").(string)
 	httpPort := state.Get("http_port").(uint)
-
 	vm := config.vm
-	c.vm.Properties()["cdrom_iso"] = isoPath
-	c.vm.Properties()["grub:root"] = config.BootDevice
 
 	tplData := &bootCommandTemplateData{
 		config.HTTPIP,
@@ -46,28 +44,28 @@ func (s *stepGrub) Run(state multistep.StateBag) multistep.StepAction {
 		}
 	}
 
-	rd, wr := io.Pipe()
-	go func() {
-		time.Sleep(1 * time.Second)
-		for _, line := range bootLines {
-			// TODO: explicit <wait> <wait5> <wait10>
-			wr.Write([]byte(line))
-			time.Sleep(1 * time.Second)
-		}
-		wr.Close()
-	}()
+	config.vm.Properties["cdrom_iso"] = isoPath
+	config.vm.Properties["grub:root"] = config.BootDevice
+	config.vm.Properties["grub:in"] = strings.Join(bootLines, "")
 
-	ui.Say("Running Grub...")
-	if err := vm.RunGrub(rd); err != nil {
+	ui.Say("Loading machine...")
+	if err := vm.Load(); err != nil {
 		err := fmt.Errorf("Error running grub: %s", err)
 		state.Put("error", err)
 		ui.Error(err.Error())
 		return multistep.ActionHalt
 	}
+
+	ui.Say("Booting...")
+	go func() {
+		s.ch <- vm.Run()
+	}()
 	return multistep.ActionContinue
 }
 
-func (s *stepGrub) Cleanup(state multistep.StateBag) {
+func (s *stepBoot) Cleanup(state multistep.StateBag) {
+	ui := state.Get("ui").(packer.Ui)
 	vm := state.Get("vm").(*vm.VM)
 	vm.Destroy()
+	ui.Say(fmt.Sprintf("Terminated: %v", <-s.ch))
 }

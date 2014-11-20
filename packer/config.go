@@ -2,7 +2,9 @@ package packer
 
 import "errors"
 import "fmt"
+import "net"
 import "os/exec"
+import "path/filepath"
 import "strings"
 
 import "github.com/mitchellh/packer/common"
@@ -176,7 +178,7 @@ func NewConfig(raws ...interface{}) (*Config, []string, error) {
 			errs = packer.MultiErrorAppend(errs, err)
 		} else {
 			if len(addrs) == 0 {
-				errs := packer.MultiErrorAppend(errs, fmt.Errorf("No address found for %s", iface))
+				errs = packer.MultiErrorAppend(errs, fmt.Errorf("No address found for %s", iface))
 			} else {
 				c.HTTPIP = strings.SplitN(addrs[0].String(), "/", 2)[0]
 			}
